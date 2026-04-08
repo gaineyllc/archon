@@ -8,7 +8,8 @@ from .base import GraphBackend
 
 
 def get_backend(backend: str | None = None) -> GraphBackend:
-    name = (backend or os.getenv("GRAPH_BACKEND", "neo4j")).lower()
+    from src.config import GRAPH_BACKEND
+    name = (backend or GRAPH_BACKEND).lower()
     if name == "kuzu":
         from .kuzu_backend import KuzuBackend
         return KuzuBackend()

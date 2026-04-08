@@ -26,9 +26,10 @@ class Neo4jBackend(GraphBackend):
                  password: str | None = None):
         if not _NEO4J_AVAILABLE:
             raise RuntimeError("neo4j not installed. Run: uv add neo4j")
-        self.uri      = uri      or os.getenv("NEO4J_URI",      "bolt://localhost:7687")
-        self.user     = user     or os.getenv("NEO4J_USER",     "neo4j")
-        self.password = password or os.getenv("NEO4J_PASSWORD", "")
+        from src.config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
+        self.uri      = uri      or NEO4J_URI
+        self.user     = user     or NEO4J_USER
+        self.password = password or NEO4J_PASSWORD
         self._driver  = None
 
     def connect(self) -> None:

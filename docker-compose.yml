@@ -1,13 +1,20 @@
 version: "3.9"
 
+# Archon — Neo4j knowledge graph
+#
+# Data directory: set ARCHON_DATA_DIR env var (default: ~/.archon)
+# Start: docker compose up -d
+# Browser UI: http://localhost:7474  (login: neo4j / archon-local)
+# Bolt: bolt://localhost:7687
+
 services:
   neo4j:
     image: neo4j:5-community
     container_name: archon-neo4j
     restart: unless-stopped
     ports:
-      - "7474:7474"   # Browser UI → http://localhost:7474
-      - "7687:7687"   # Bolt protocol (Python driver)
+      - "7474:7474"   # Browser UI
+      - "7687:7687"   # Bolt
     environment:
       NEO4J_AUTH: neo4j/archon-local
       NEO4J_PLUGINS: '["apoc"]'
@@ -15,6 +22,6 @@ services:
       NEO4J_server_memory_heap_max__size: 2G
       NEO4J_server_memory_pagecache_size: 1G
     volumes:
-      - F:/archon-graph/neo4j/data:/data
-      - F:/archon-graph/neo4j/logs:/logs
-      - F:/archon-graph/neo4j/plugins:/plugins
+      - ${ARCHON_DATA_DIR:-~/.archon}/graph/neo4j/data:/data
+      - ${ARCHON_DATA_DIR:-~/.archon}/graph/neo4j/logs:/logs
+      - ${ARCHON_DATA_DIR:-~/.archon}/graph/neo4j/plugins:/plugins

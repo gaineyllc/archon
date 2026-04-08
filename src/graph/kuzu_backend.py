@@ -27,8 +27,9 @@ class KuzuBackend(GraphBackend):
     def __init__(self, db_path: str | None = None):
         if not _KUZU_AVAILABLE:
             raise RuntimeError("kuzu not installed. Run: uv add kuzu")
+        from src.config import kuzu_db_dir
         self.db_path = db_path or os.getenv(
-            "KUZU_DB_PATH", "F:/archon-graph/kuzu"
+            "KUZU_DB_PATH", str(kuzu_db_dir())
         )
         self._db = None
         self._conn = None

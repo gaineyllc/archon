@@ -11,14 +11,17 @@ from typing import Any
 import httpx
 
 
-OLLAMA_BASE = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+from src.config import (
+    OLLAMA_BASE_URL, OLLAMA_SUMMARY_MODEL, OLLAMA_VISION_MODEL,
+    OLLAMA_CODE_MODEL, OLLAMA_REASON_MODEL
+)
 
-# Model assignments — all local
+OLLAMA_BASE = OLLAMA_BASE_URL
 MODELS = {
-    "summary":   os.getenv("OLLAMA_SUMMARY_MODEL",  "llama3.2"),
-    "vision":    os.getenv("OLLAMA_VISION_MODEL",   "llava"),
-    "code":      os.getenv("OLLAMA_CODE_MODEL",     "qwen2.5-coder:32b"),
-    "reasoning": os.getenv("OLLAMA_REASON_MODEL",   "deepseek-r1:32b"),
+    "summary":   OLLAMA_SUMMARY_MODEL,
+    "vision":    OLLAMA_VISION_MODEL,
+    "code":      OLLAMA_CODE_MODEL,
+    "reasoning": OLLAMA_REASON_MODEL,
 }
 
 

@@ -277,61 +277,12 @@ def _extract_document(path: str, ext: str) -> dict[str, Any]:
 
 
 def _extract_executable(path: str) -> dict[str, Any]:
-    props: dict[str, Any] = {}
+    """Cross-platform binary analysis via lief (PE/ELF/Mach-O)."""
     try:
-        import pefile
-        pe = pefile.PE(path, fast_load=True)
-        pe.parse_data_directories()
-
-        if hasattr(pe, "VS_FIXEDFILEINFO"):
-            fi = pe.VS_FIXEDFILEINFO[0]
-            v = fi.FileVersionMS
-            props["file_version"] = f"{v>>16}.{v&0xFFFF}"
-
-        if hasattr(pe, "FileInfo"):
-            for fi_entry in pe.FileInfo:
-                for entry in fi_entry:
-                    if hasattr(entry, "StringTable"):
-                        for st in entry.StringTable:
-                            for k, v in st.entries.items():
-                                k_str = k.decode(errors="replace").lower()
-                                v_str = v.decode(errors="replace").strip()
-                                if "productname" in k_str:
-                                    props["product_name"] = v_str
-                                elif "companyname" in k_str:
-                                    props["company_name"] = v_str
-                                elif "filedescription" in k_str:
-                                    props["file_description"] = v_str
-
-        # Machine type → architecture
-        machine = pe.FILE_HEADER.Machine
-        props["architecture"] = {0x8664: "x64", 0x14c: "x86",
-                                  0xAA64: "arm64"}.get(machine, f"0x{machine:04x}")
-
-        # Entropy (high entropy → packed/encrypted)
-        entropies = [s.get_entropy() for s in pe.sections]
-        props["entropy"] = round(max(entropies), 3) if entropies else None
-        props["is_packed"] = props.get("entropy", 0) > 7.0
-
-        pe.close()
-    except Exception:
-        pass
-
-    # Code signature check (Windows only)
-    try:
-        import subprocess
-        result = subprocess.run(
-            ["powershell", "-Command",
-             f"(Get-AuthenticodeSignature '{path}').Status"],
-            capture_output=True, text=True, timeout=10
-        )
-        status = result.stdout.strip()
-        props["signed"] = status in ("Valid", "UnknownError")
-        props["signature_valid"] = status == "Valid"
-    except Exception:
-        pass
-
-    return {k: v for k, v in props.items() if v is not None}
+        from src.extractors.binary import analyze_binary
+        return analyze_binary(path)
+    except Exception as e:
+        return {"extraction_error": str(e)}
 
 
 def _extract_archive(path: str, ext: str) -> dict[str, Any]:

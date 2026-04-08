@@ -32,27 +32,38 @@ Local AI agent platform powered by Ollama (GPU). Three agents, one MCP server.
 git clone https://github.com/gaineyllc/archon
 cd archon
 
-# 2. Install Python deps
-uv sync
+# 2. One-command setup (handles deps, models, Neo4j, .env)
+python install.py
 
-# 3. Pull models
-ollama pull qwen2.5-coder:32b   # best coding model
-ollama pull deepseek-r1:32b     # reasoning
-ollama pull llava               # vision (NAS image analysis)
+# 3. Edit credentials
+# Fill in .env with your NAS/Synology/IPTorrents credentials
 
-# 4. Configure
-cp .env.example .env
-# edit .env with your NAS/Synology/IPTorrents credentials
-
-# 5a. Run as MCP server (Claude Desktop / Claude Code / Cursor)
+# 4a. Run as MCP server (Claude Desktop / Claude Code / Cursor)
 uv run python -m src.mcp_server
 
-# 5b. Run as REST API
+# 4b. Run as REST API
 uv run uvicorn src.api.main:app --reload
 
-# 5c. Run via npx (after npm install or publish)
+# 4c. Run via npx
 npx archon
 ```
+
+## Platform Support
+
+| Feature | Windows | macOS | Linux |
+|---|---|---|---|
+| Local filesystem | ✅ | ✅ | ✅ |
+| SMB2/3 | ✅ | ✅ | ✅ |
+| NFS | ✅ (NFS Client feature) | ✅ | ✅ |
+| GPU (CUDA) | ✅ RTX | ❌ (CPU) | ✅ NVIDIA |
+| GPU (Metal) | ❌ | ✅ Ollama only | ❌ |
+| PE binary analysis | ✅ | ✅ (lief) | ✅ (lief) |
+| ELF binary analysis | ✅ (lief) | ✅ (lief) | ✅ |
+| Mach-O binary analysis | ✅ (lief) | ✅ | ✅ (lief) |
+| Face recognition | ✅ GPU | ✅ CPU | ✅ GPU |
+| Code signing check | PowerShell | codesign | readelf |
+
+Data directory: `~/.archon` (override with `ARCHON_DATA_DIR` env var)
 
 ## MCP Integration
 
