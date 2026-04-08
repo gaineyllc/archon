@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "onyx-agent": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "src.mcp_server"],
+      "env": {
+        "NAS_DRY_RUN": "true"
+      }
+    }
+  }
+}
