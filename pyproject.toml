@@ -16,6 +16,7 @@ dependencies = [
     "pydantic>=2.12.5",
     "python-dotenv>=1.2.2",
     "rich>=14.3.3",
+    "smbprotocol>=1.16.1",
     "uvicorn[standard]>=0.44.0",
 ]
 

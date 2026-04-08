@@ -23,17 +23,31 @@ from langgraph.prebuilt import ToolNode
 
 from src.agents.nas_cataloger.tools.filesystem import get_tools
 
-SYSTEM_PROMPT = """You are an expert file system analyst.
-Your job is to deeply analyse files on a NAS, understand their content,
-detect duplicates, and organise everything logically.
-Think carefully before moving or deleting anything — always explain your
-reasoning and ask for confirmation before destructive operations."""
+SYSTEM_PROMPT = """You are an expert file system analyst with deep knowledge of
+SMB/CIFS, NFS, and local filesystem protocols.
+
+Your job is to deeply analyse files on a NAS or file share, understand their
+content, detect duplicates, and organise everything logically.
+
+Protocol-aware behaviour:
+- For SMB shares: be mindful of share-level permissions and NTFS ACLs
+- For NFS exports: respect read-only mounts; check readonly flag before writes
+- For local paths: use OS-appropriate path separators
+
+Sources are specified as URIs:
+  local:  /path/to/dir  or  C:\\path\\to\\dir
+  SMB:    smb://user:pass@host/share/subpath
+  NFS:    nfs://host/export/subpath
+
+Always explain your reasoning and ask for confirmation before destructive operations.
+Never delete without listing duplicates first and confirming which copy to keep."""
 
 
 class CataloguerState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
-    nas_root: str          # e.g. "\\\\NAS\\media"
+    nas_root: str          # local path, smb://user:pass@host/share/path, nfs://host/export
     dry_run: bool          # when True, never touch the filesystem
+    protocol: str          # "local" | "smb" | "nfs" (informational)
 
 
 def build_nas_agent(model: str = "llava", dry_run: bool = True) -> object:

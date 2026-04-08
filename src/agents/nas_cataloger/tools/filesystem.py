@@ -1,18 +1,26 @@
 """
-NAS filesystem tools — safe wrappers the agent can call.
+NAS filesystem tools — protocol-aware wrappers the agent can call.
+
+Supports local paths, SMB shares (smb://user:pass@host/share/path),
+and NFS exports (nfs://host/export/path).
+
 All destructive operations check dry_run before executing.
 """
 from __future__ import annotations
 
 import hashlib
 import os
-import shutil
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 from langchain_core.tools import tool
 
-# Module-level flag set by build_nas_agent
+from src.agents.nas_cataloger.protocols.factory import protocol_factory
+from src.agents.nas_cataloger.protocols.local import LocalProtocol
+from src.agents.nas_cataloger.protocols.base import FileInfo
+
+# Module-level flag — set by get_tools()
 _DRY_RUN = True
 
 
@@ -29,167 +37,250 @@ def get_tools(dry_run: bool = True) -> list:
         delete_file,
         create_directory,
         generate_catalogue_report,
+        list_smb_shares,
+        get_protocol_info,
     ]
 
 
-@tool
-def list_directory(path: str, recursive: bool = False) -> list[dict[str, Any]]:
-    """List files in a directory. Set recursive=True to walk subdirectories."""
-    root = Path(path)
-    if not root.exists():
-        return [{"error": f"Path does not exist: {path}"}]
-
-    walker = root.rglob("*") if recursive else root.iterdir()
-    results = []
-    for p in walker:
-        try:
-            stat = p.stat()
-            results.append({
-                "path": str(p),
-                "name": p.name,
-                "type": "dir" if p.is_dir() else "file",
-                "size_bytes": stat.st_size if p.is_file() else None,
-                "modified": stat.st_mtime,
-                "suffix": p.suffix.lower(),
-            })
-        except (PermissionError, OSError):
-            results.append({"path": str(p), "error": "permission_denied"})
-    return results
-
-
-@tool
-def get_file_info(path: str) -> dict[str, Any]:
-    """Get detailed metadata for a single file."""
-    p = Path(path)
-    if not p.exists():
-        return {"error": f"File not found: {path}"}
-    stat = p.stat()
+def _fileinfo_to_dict(f: FileInfo) -> dict:
     return {
-        "path": str(p),
-        "name": p.name,
-        "suffix": p.suffix.lower(),
-        "size_bytes": stat.st_size,
-        "size_mb": round(stat.st_size / 1_048_576, 2),
-        "modified": stat.st_mtime,
-        "is_file": p.is_file(),
-        "is_dir": p.is_dir(),
+        "path": f.path, "name": f.name, "type": "dir" if f.is_dir else "file",
+        "size_bytes": f.size_bytes, "size_mb": f.size_mb,
+        "modified": f.modified, "suffix": f.suffix,
+        "protocol": f.protocol, "host": f.host, "share": f.share,
     }
 
 
 @tool
-def compute_file_hash(path: str) -> dict[str, str]:
-    """Compute SHA-256 hash of a file for duplicate detection."""
+def get_protocol_info(source: str) -> dict[str, Any]:
+    """
+    Parse a source URI and return protocol metadata without connecting.
+    source: local path, smb://user:pass@host/share/path, or nfs://host/export/path
+    """
     try:
-        h = hashlib.sha256()
-        with open(path, "rb") as f:
-            for chunk in iter(lambda: f.read(65536), b""):
-                h.update(chunk)
-        return {"path": path, "sha256": h.hexdigest()}
-    except (OSError, PermissionError) as e:
-        return {"path": path, "error": str(e)}
+        proto, path = protocol_factory(source)
+        return {
+            "protocol": proto.__class__.__name__,
+            "root_path": path,
+            "source": source,
+            "dry_run": _DRY_RUN,
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @tool
-def read_text_file(path: str, max_chars: int = 4000) -> dict[str, str]:
-    """Read text content from a file (txt, md, json, csv, etc.)."""
+def list_smb_shares(host: str, username: str = "", password: str = "",
+                    domain: str = "") -> list[dict[str, Any]]:
+    """
+    List available SMB shares on a remote host.
+    Useful for discovery before cataloguing.
+    """
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read(max_chars)
-        return {"path": path, "content": content, "truncated": len(content) == max_chars}
-    except (OSError, PermissionError) as e:
-        return {"path": path, "error": str(e)}
+        import smbclient
+        smbclient.register_session(
+            host,
+            username=f"{domain}\\{username}" if domain else username,
+            password=password,
+        )
+        shares = []
+        for share in smbclient.listshares(host):
+            shares.append({"name": share, "unc": f"\\\\{host}\\{share}"})
+        return shares
+    except ImportError:
+        return [{"error": "smbprotocol not installed. Run: uv add smbprotocol"}]
+    except Exception as e:
+        return [{"error": str(e)}]
 
 
 @tool
-def find_duplicates(directory: str) -> list[dict[str, Any]]:
-    """Scan a directory recursively, group files by SHA-256 hash, return duplicate groups."""
-    from collections import defaultdict
+def list_directory(source: str, recursive: bool = False) -> list[dict[str, Any]]:
+    """
+    List files in a directory. Supports local paths and UNC/URI sources.
+    source: local path, smb://user:pass@host/share/subpath, or nfs://host/export/subpath
+    recursive: if True, walk all subdirectories
+    """
+    try:
+        proto, path = protocol_factory(source)
+        with proto:
+            entries = list(proto.walk(path, recursive=recursive)
+                           if recursive else proto.list_dir(path))
+        return [_fileinfo_to_dict(f) for f in entries]
+    except Exception as e:
+        return [{"error": str(e)}]
+
+
+@tool
+def get_file_info(source: str) -> dict[str, Any]:
+    """Get detailed metadata for a single file. source is a local path or URI."""
+    try:
+        proto, path = protocol_factory(source)
+        with proto:
+            entries = proto.list_dir(str(Path(path).parent))
+            target = Path(path).name
+            for f in entries:
+                if f.name == target:
+                    return _fileinfo_to_dict(f)
+        return {"error": f"File not found: {path}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@tool
+def compute_file_hash(source: str) -> dict[str, str]:
+    """Compute SHA-256 hash of a file. source is a local path or URI."""
+    try:
+        proto, path = protocol_factory(source)
+        with proto:
+            sha256 = proto.compute_hash(path)
+        return {"path": source, "sha256": sha256}
+    except Exception as e:
+        return {"path": source, "error": str(e)}
+
+
+@tool
+def read_text_file(source: str, max_chars: int = 4000) -> dict[str, Any]:
+    """Read text content from a file. source is a local path or URI."""
+    try:
+        proto, path = protocol_factory(source)
+        with proto:
+            content = proto.read_text(path, max_chars=max_chars)
+        return {"path": source, "content": content,
+                "truncated": len(content) == max_chars}
+    except Exception as e:
+        return {"path": source, "error": str(e)}
+
+
+@tool
+def find_duplicates(source: str) -> list[dict[str, Any]]:
+    """
+    Scan a directory recursively, group files by SHA-256, return duplicate groups.
+    source: local path, smb://..., or nfs://...
+    """
     hashes: dict[str, list[str]] = defaultdict(list)
-    for root, _, files in os.walk(directory):
-        for fname in files:
-            fpath = os.path.join(root, fname)
-            try:
-                h = hashlib.sha256()
-                with open(fpath, "rb") as f:
-                    for chunk in iter(lambda: f.read(65536), b""):
-                        h.update(chunk)
-                hashes[h.hexdigest()].append(fpath)
-            except (OSError, PermissionError):
-                pass
+    try:
+        proto, path = protocol_factory(source)
+        with proto:
+            for info in proto.walk(path, recursive=True):
+                if info.is_dir or info.size_bytes == 0:
+                    continue
+                try:
+                    sha256 = proto.compute_hash(info.path)
+                    hashes[sha256].append(info.path)
+                except Exception:
+                    pass
+    except Exception as e:
+        return [{"error": str(e)}]
+
     return [
-        {"sha256": h, "count": len(paths), "paths": paths}
+        {"sha256": h, "count": len(paths), "paths": paths,
+         "wasted_bytes": (len(paths) - 1) * _get_size(paths[0])}
         for h, paths in hashes.items()
         if len(paths) > 1
     ]
 
 
+def _get_size(path: str) -> int:
+    try:
+        return os.path.getsize(path)
+    except Exception:
+        return 0
+
+
 @tool
 def move_file(source: str, destination: str) -> dict[str, str]:
-    """Move a file from source to destination. Respects dry_run mode."""
+    """
+    Move a file. source and destination can be local paths or URIs.
+    Cross-protocol moves (SMB → local) are supported via read+write+delete.
+    Respects dry_run mode.
+    """
     if _DRY_RUN:
         return {"status": "dry_run", "would_move": source, "to": destination}
     try:
-        Path(destination).parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(source, destination)
+        src_proto, src_path = protocol_factory(source)
+        dst_proto, dst_path = protocol_factory(destination)
+
+        src_type = type(src_proto).__name__
+        dst_type = type(dst_proto).__name__
+
+        if src_type == dst_type:
+            # Same protocol — use native move (single round trip)
+            with src_proto:
+                src_proto.move(src_path, dst_path)
+        else:
+            # Cross-protocol — read → write → delete
+            with src_proto:
+                data = src_proto.read_bytes(src_path, max_bytes=10 * 1024 * 1024 * 1024)
+            with dst_proto:
+                dst_proto.mkdir(str(Path(dst_path).parent))
+                dst_proto._write_bytes(dst_path, data)  # type: ignore
+            with src_proto:
+                src_proto.delete(src_path)
+
         return {"status": "moved", "from": source, "to": destination}
-    except (OSError, shutil.Error) as e:
+    except Exception as e:
         return {"status": "error", "error": str(e)}
 
 
 @tool
-def delete_file(path: str) -> dict[str, str]:
-    """Delete a file. Respects dry_run mode. CANNOT delete directories."""
+def delete_file(source: str) -> dict[str, str]:
+    """Delete a file. Respects dry_run. Will NOT delete directories."""
     if _DRY_RUN:
-        return {"status": "dry_run", "would_delete": path}
-    p = Path(path)
-    if p.is_dir():
-        return {"status": "error", "error": "Will not delete directories via this tool"}
+        return {"status": "dry_run", "would_delete": source}
     try:
-        p.unlink()
-        return {"status": "deleted", "path": path}
-    except (OSError, PermissionError) as e:
+        proto, path = protocol_factory(source)
+        with proto:
+            proto.delete(path)
+        return {"status": "deleted", "path": source}
+    except Exception as e:
         return {"status": "error", "error": str(e)}
 
 
 @tool
-def create_directory(path: str) -> dict[str, str]:
-    """Create a directory (including parents). Respects dry_run mode."""
+def create_directory(source: str) -> dict[str, str]:
+    """Create a directory (including parents). Respects dry_run."""
     if _DRY_RUN:
-        return {"status": "dry_run", "would_create": path}
+        return {"status": "dry_run", "would_create": source}
     try:
-        Path(path).mkdir(parents=True, exist_ok=True)
-        return {"status": "created", "path": path}
-    except (OSError, PermissionError) as e:
+        proto, path = protocol_factory(source)
+        with proto:
+            proto.mkdir(path)
+        return {"status": "created", "path": source}
+    except Exception as e:
         return {"status": "error", "error": str(e)}
 
 
 @tool
-def generate_catalogue_report(directory: str, output_path: str) -> dict[str, str]:
+def generate_catalogue_report(source: str, output_path: str) -> dict[str, Any]:
     """
-    Walk a directory and write a markdown catalogue report to output_path.
-    Includes file counts, size totals, and extension breakdown.
+    Walk source recursively and write a markdown catalogue report.
+    source: local path, smb://..., or nfs://...
+    output_path: local path for the report file
     """
-    from collections import defaultdict
     ext_stats: dict[str, dict] = defaultdict(lambda: {"count": 0, "bytes": 0})
     total_files = 0
     total_bytes = 0
+    protocol_name = "unknown"
 
-    for root, _, files in os.walk(directory):
-        for fname in files:
-            fpath = os.path.join(root, fname)
-            try:
-                size = os.path.getsize(fpath)
-                ext = Path(fname).suffix.lower() or "(no ext)"
+    try:
+        proto, path = protocol_factory(source)
+        protocol_name = type(proto).__name__
+        with proto:
+            for info in proto.walk(path, recursive=True):
+                if info.is_dir:
+                    continue
+                ext = info.suffix or "(no ext)"
                 ext_stats[ext]["count"] += 1
-                ext_stats[ext]["bytes"] += size
+                ext_stats[ext]["bytes"] += info.size_bytes
                 total_files += 1
-                total_bytes += size
-            except OSError:
-                pass
+                total_bytes += info.size_bytes
+    except Exception as e:
+        return {"error": str(e)}
 
     lines = [
-        f"# NAS Catalogue Report\n",
-        f"**Root:** `{directory}`\n",
+        f"# NAS Catalogue Report\n\n",
+        f"**Source:** `{source}`\n",
+        f"**Protocol:** {protocol_name}\n",
         f"**Total files:** {total_files:,}\n",
         f"**Total size:** {total_bytes / 1_073_741_824:.2f} GB\n\n",
         "## By Extension\n\n",
@@ -200,8 +291,15 @@ def generate_catalogue_report(directory: str, output_path: str) -> dict[str, str
         lines.append(f"| `{ext}` | {stats['count']:,} | {stats['bytes']/1_048_576:.1f} |\n")
 
     report = "".join(lines)
+
     if not _DRY_RUN:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(report)
-        return {"status": "written", "path": output_path}
-    return {"status": "dry_run", "report_preview": report[:500]}
+        return {"status": "written", "path": output_path,
+                "total_files": total_files,
+                "total_gb": round(total_bytes / 1_073_741_824, 2)}
+
+    return {"status": "dry_run", "report_preview": report[:800],
+            "total_files": total_files,
+            "total_gb": round(total_bytes / 1_073_741_824, 2)}
