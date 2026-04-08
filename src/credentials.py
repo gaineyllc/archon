@@ -39,7 +39,10 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 
 try:
-    from kyber import Kyber768
+    try:
+        from kyber_py.kyber import Kyber768  # kyber-py >= 1.2
+    except ImportError:
+        from kyber import Kyber768           # kyber-py < 1.2
     _KYBER_AVAILABLE = True
 except ImportError:
     _KYBER_AVAILABLE = False
