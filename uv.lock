@@ -127,6 +127,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "fastmcp" },
     { name = "httpx" },
+    { name = "kyber-py" },
     { name = "langchain-community" },
     { name = "langchain-core" },
     { name = "langchain-ollama" },
@@ -163,6 +164,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.135.3" },
     { name = "fastmcp", specifier = ">=3.2.0" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "kyber-py", specifier = ">=1.2.0" },
     { name = "langchain-community", specifier = ">=0.4.1" },
     { name = "langchain-core", specifier = ">=1.2.28" },
     { name = "langchain-ollama", specifier = ">=1.1.0" },
@@ -1167,6 +1169,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/2c/8f/85bf51ad4150f64e8c665daf0d9dfe9787ae92005efb9a4d1cba592bd79d/kubernetes-35.0.0.tar.gz", hash = "sha256:3d00d344944239821458b9efd484d6df9f011da367ecb155dadf9513f05f09ee", size = 1094642, upload-time = "2026-01-16T01:05:27.76Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0c/70/05b685ea2dffcb2adbf3cdcea5d8865b7bc66f67249084cf845012a0ff13/kubernetes-35.0.0-py2.py3-none-any.whl", hash = "sha256:39e2b33b46e5834ef6c3985ebfe2047ab39135d41de51ce7641a7ca5b372a13d", size = 2017602, upload-time = "2026-01-16T01:05:25.991Z" },
+]
+
+[[package]]
+name = "kyber-py"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ce/38/83a33d2bbb3e7d0b2d13ffd7e1438e513622dc652cf4c00865e9f925ee08/kyber_py-1.2.0.tar.gz", hash = "sha256:9062b7c307b4b84980ec6b775091558d60c488985c4e8081eeb66fd4bb29a354", size = 2384774, upload-time = "2025-12-17T19:07:44.796Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/eb/50/0eda99082660ead34aebe2c212e40ff371ce7dd327d80c0980a7398f2d43/kyber_py-1.2.0-py3-none-any.whl", hash = "sha256:517f4c8f5009f5b4dfb8f4bfd0f6d631bf56e0cad3f709282e6450e5d8eda6aa", size = 33749, upload-time = "2025-12-17T19:07:43.476Z" },
 ]
 
 [[package]]

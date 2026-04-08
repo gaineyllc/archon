@@ -272,6 +272,25 @@ def register_graph_tools(mcp: FastMCP) -> None:
             db.close()
 
     @mcp.tool
+    def graph_index_status(state_label: str = "default") -> dict[str, Any]:
+        """
+        Get the current indexing status — how many files indexed,
+        pending, complete, errors. Works across restarts.
+        """
+        from src.pipeline.indexer import ArchonIndexer
+        return ArchonIndexer(state_label=state_label).status()
+
+    @mcp.tool
+    def graph_index_resume(state_label: str = "default") -> dict[str, Any]:
+        """
+        Resume a previously interrupted index run.
+        Picks up exactly where it left off — only processes incomplete files.
+        """
+        from src.pipeline.indexer import ArchonIndexer
+        indexer = ArchonIndexer(state_label=state_label)
+        return indexer.resume(state_label)
+
+    @mcp.tool
     def graph_index_source(
         source: str,
         recursive: bool = True,

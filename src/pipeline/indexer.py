@@ -1,18 +1,21 @@
 """
-Archon Indexing Pipeline
-────────────────────────
-Orchestrates: scan → extract → enrich → write graph
-
+Archon Indexing Pipeline — Resumable, Incremental, Parallel
+────────────────────────────────────────────────────────────
 Designed for local-only operation:
   - All LLM calls → Ollama (local GPU)
   - All face detection → InsightFace (local GPU)
-  - All API calls → free public REST APIs (EOL, NVD, TMDB, MusicBrainz)
-  - Graph storage → Kuzu (local) or Neo4j (local server)
+  - All API calls → free public REST APIs
+  - Graph storage → Neo4j (local Docker) or Kuzu
+
+Key features:
+  - Resumable: SQLite state tracker — restart from checkpoint on interruption
+  - Incremental: skips unchanged files (SHA-256 + mtime comparison)
+  - Parallel: bounded worker pool (separate limits for I/O vs LLM vs face)
+  - Progress: real-time stats via callback or SSE
 """
 from __future__ import annotations
 
 import hashlib
-import os
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -20,8 +23,10 @@ from typing import Any, Callable
 from src.graph.base import GraphBackend, NodeData, RelData
 from src.graph.schema import NodeType, RelType
 from src.graph.factory import get_backend
-from src.extractors.metadata_extract import extract_all, categorize
+from src.enrichers.metadata import extract_all, categorize
 from src.agents.nas_cataloger.protocols.factory import protocol_factory
+from src.pipeline.state import IndexState
+from src.pipeline.worker import IndexWorkerPool, WorkItem
 
 
 class ArchonIndexer:
@@ -30,31 +35,46 @@ class ArchonIndexer:
 
     Args:
         backend:        GraphBackend instance (or None to auto-detect from env)
-        enrich_llm:     Run LLM enrichment (summary, entities, topics)
-        enrich_vision:  Run vision enrichment (LLaVA for images/video)
+        state_label:    Label for SQLite state DB (allows multiple concurrent indexes)
+        enrich_llm:     Run LLM enrichment
+        enrich_vision:  Run vision enrichment (LLaVA)
         enrich_faces:   Run face detection and clustering
-        enrich_api:     Run external API enrichment (EOL, CVE, TMDB)
+        enrich_api:     Run external API enrichment (EOL, CVE)
         dry_run:        Extract and enrich but don't write to graph
-        on_progress:    Optional callback(file_path, status, props)
+        io_workers:     Parallel file I/O threads (default 8)
+        llm_workers:    Parallel Ollama calls (default 2, GPU bound)
+        face_workers:   Parallel face detection calls (default 1, GPU bound)
+        on_progress:    Optional callback(WorkResult)
+        incremental:    Skip unchanged files (default True)
     """
 
     def __init__(
         self,
         backend: GraphBackend | None = None,
+        state_label: str = "default",
         enrich_llm: bool = True,
         enrich_vision: bool = True,
         enrich_faces: bool = True,
         enrich_api: bool = True,
         dry_run: bool = False,
+        io_workers: int = 8,
+        llm_workers: int = 2,
+        face_workers: int = 1,
         on_progress: Callable | None = None,
+        incremental: bool = True,
     ):
         self.backend       = backend or get_backend()
+        self.state_label   = state_label
         self.enrich_llm    = enrich_llm
         self.enrich_vision = enrich_vision
         self.enrich_faces  = enrich_faces
         self.enrich_api    = enrich_api
         self.dry_run       = dry_run
+        self.io_workers    = io_workers
+        self.llm_workers   = llm_workers
+        self.face_workers  = face_workers
         self.on_progress   = on_progress
+        self.incremental   = incremental
         self._face_enricher = None
 
     # ── Public API ─────────────────────────────────────────────────────────────
@@ -62,152 +82,213 @@ class ArchonIndexer:
     def index(self, source: str, recursive: bool = True) -> dict[str, Any]:
         """
         Index all files at source into the graph.
+        Resumable — safe to interrupt and restart.
         source: local path, smb://..., nfs://...
         """
-        stats = {
+        stats: dict[str, Any] = {
+            "source": source,
             "files_scanned": 0,
             "files_indexed": 0,
-            "files_enriched": 0,
+            "files_skipped": 0,
             "errors": 0,
             "started_at": time.time(),
         }
 
-        with self.backend:
+        with self.backend, IndexState(self.state_label) as state:
             self.backend.init_schema()
+            run_id = state.start_run(source)
+
             proto, path = protocol_factory(source)
+
+            pool = IndexWorkerPool(
+                graph_backend=self.backend,
+                state=state,
+                io_workers=self.io_workers,
+                llm_workers=self.llm_workers,
+                face_workers=self.face_workers,
+                enrich_llm=self.enrich_llm,
+                enrich_vision=self.enrich_vision,
+                enrich_faces=self.enrich_faces,
+                enrich_api=self.enrich_api,
+                on_progress=self.on_progress,
+            )
+
+            BATCH_SIZE = 500
+            batch: list[WorkItem] = []
 
             with proto:
                 for file_info in proto.walk(path, recursive=recursive):
                     stats["files_scanned"] += 1
-                    try:
-                        result = self._process_file(file_info, proto)
-                        if result.get("indexed"):
-                            stats["files_indexed"] += 1
-                        if result.get("enriched"):
-                            stats["files_enriched"] += 1
-                    except Exception as e:
-                        stats["errors"] += 1
-                        stats.setdefault("error_list", []).append(
-                            {"path": file_info.path, "error": str(e)}
+
+                    if file_info.is_dir:
+                        if not self.dry_run:
+                            self._write_directory(file_info)
+                        continue
+
+                    file_id = self._file_id(file_info)
+                    category = categorize(file_info.suffix)
+
+                    # Incremental check — skip if unchanged
+                    if self.incremental:
+                        # Quick mtime check before hashing
+                        needs = state.needs_indexing(
+                            file_id, sha256="",
+                            modified=file_info.modified,
+                            stages_needed=IndexState.STAGE_METADATA,
                         )
+                        if not needs:
+                            stats["files_skipped"] += 1
+                            continue
+
+                    state.mark_started(
+                        file_id, file_info.path,
+                        file_info.host, file_info.share,
+                        file_info.size_bytes, file_info.modified,
+                    )
+
+                    if not self.dry_run:
+                        batch.append(WorkItem(
+                            file_id=file_id,
+                            path=file_info.path,
+                            host=file_info.host,
+                            share=file_info.share,
+                            size_bytes=file_info.size_bytes,
+                            modified=file_info.modified,
+                            suffix=file_info.suffix,
+                            category=category,
+                            protocol_obj=proto,
+                        ))
+
+                    if len(batch) >= BATCH_SIZE:
+                        batch_stats = pool.process_batch(batch)
+                        stats["files_indexed"] += batch_stats["succeeded"]
+                        stats["errors"]        += batch_stats["failed"]
+                        batch = []
+
+                # Process remaining batch
+                if batch and not self.dry_run:
+                    batch_stats = pool.process_batch(batch)
+                    stats["files_indexed"] += batch_stats["succeeded"]
+                    stats["errors"]        += batch_stats["failed"]
 
             # Final face clustering pass
-            if self.enrich_faces and self._face_enricher:
-                face_stats = self._face_enricher.write_to_graph()
+            if self.enrich_faces and pool._face_enricher:
+                face_stats = pool._face_enricher.write_to_graph()
                 stats["face_clusters"] = face_stats.get("clusters_created", 0)
 
+            state.end_run(run_id, stats)
+
         stats["duration_secs"] = round(time.time() - stats["started_at"], 1)
+        stats["files_per_second"] = round(
+            stats["files_scanned"] / max(stats["duration_secs"], 0.1), 1
+        )
         return stats
 
-    # ── File processing ────────────────────────────────────────────────────────
+    def resume(self, source: str) -> dict[str, Any]:
+        """
+        Resume a previously interrupted index run.
+        Only processes files that haven't completed all enrichment stages.
+        """
+        with IndexState(self.state_label) as state:
+            incomplete = state.get_incomplete(
+                stages_needed=self._stages_needed(),
+                limit=10000,
+            )
 
-    def _process_file(self, file_info: Any, proto: Any) -> dict[str, bool]:
-        result = {"indexed": False, "enriched": False}
+        if not incomplete:
+            return {"status": "already_complete", "files_remaining": 0}
 
-        if file_info.is_dir:
-            self._write_directory(file_info)
-            return result
+        # Re-index only the incomplete files
+        # (Re-open protocol for each file path)
+        stats = {
+            "files_resumed": len(incomplete),
+            "files_completed": 0,
+            "errors": 0,
+        }
 
-        # Generate stable ID
-        file_id = hashlib.sha256(
+        with self.backend, IndexState(self.state_label) as state:
+            pool = IndexWorkerPool(
+                graph_backend=self.backend,
+                state=state,
+                io_workers=self.io_workers,
+                llm_workers=self.llm_workers,
+                enrich_llm=self.enrich_llm,
+                enrich_vision=self.enrich_vision,
+                enrich_faces=self.enrich_faces,
+                enrich_api=self.enrich_api,
+                on_progress=self.on_progress,
+            )
+
+            # Group by protocol/host to open connections efficiently
+            items = []
+            for f in incomplete:
+                proto, path = protocol_factory(f["path"])
+                category = categorize(Path(f["path"]).suffix.lower())
+                items.append(WorkItem(
+                    file_id=f["id"],
+                    path=f["path"],
+                    host=f.get("host", ""),
+                    share=f.get("share", ""),
+                    size_bytes=0,
+                    modified=0,
+                    suffix=Path(f["path"]).suffix.lower(),
+                    category=category,
+                    protocol_obj=proto,
+                ))
+
+            batch_stats = pool.process_batch(items)
+            stats["files_completed"] = batch_stats["succeeded"]
+            stats["errors"] = batch_stats["failed"]
+
+        return stats
+
+    def status(self) -> dict[str, Any]:
+        """Get current indexing status from state DB."""
+        with IndexState(self.state_label) as state:
+            return {
+                "state_db": str(state.db_path),
+                "index_stats": state.stats(),
+                "last_run": state.last_run_stats(),
+            }
+
+    def _stages_needed(self) -> int:
+        stages = IndexState.STAGE_METADATA
+        if self.enrich_llm:    stages |= IndexState.STAGE_LLM
+        if self.enrich_vision: stages |= IndexState.STAGE_VISION
+        if self.enrich_faces:  stages |= IndexState.STAGE_FACE
+        if self.enrich_api:    stages |= IndexState.STAGE_API
+        return stages
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _file_id(self, file_info: Any) -> str:
+        return hashlib.sha256(
             f"{file_info.host}:{file_info.share}:{file_info.path}".encode()
         ).hexdigest()[:24]
 
-        # Base props from FileInfo
-        props: dict[str, Any] = {
-            "path":        file_info.path,
-            "name":        file_info.name,
-            "extension":   file_info.suffix,
-            "size_bytes":  file_info.size_bytes,
-            "modified":    file_info.modified,
-            "protocol":    file_info.protocol,
-            "host":        file_info.host,
-            "share":       file_info.share,
-            "indexed_at":  time.time(),
-            "enrichment_status": "pending",
-        }
+    def _dir_id(self, path: str, host: str, share: str) -> str:
+        return hashlib.sha256(f"{host}:{share}:{path}".encode()).hexdigest()[:24]
 
-        # Deep metadata extraction
-        try:
-            extracted = extract_all(file_info.path)
-            props.update(extracted)
-        except Exception:
-            pass
+    def _write_directory(self, dir_info: Any) -> None:
+        dir_id = self._dir_id(dir_info.path, dir_info.host, dir_info.share)
+        self.backend.upsert_node(NodeData(
+            type=NodeType.DIRECTORY, id=dir_id,
+            props={
+                "path": dir_info.path,
+                "name": dir_info.name,
+                "host": dir_info.host,
+                "share": dir_info.share,
+            }
+        ))
 
-        # SHA-256 hash
-        try:
-            props["sha256"] = proto.compute_hash(file_info.path)
-        except Exception:
-            pass
-
-        # Write base node
-        if not self.dry_run:
-            self.backend.upsert_node(NodeData(
-                type=NodeType.FILE, id=file_id, props=props
-            ))
-            # CHILD_OF directory
-            dir_id = self._dir_id(str(Path(file_info.path).parent),
-                                  file_info.host, file_info.share)
-            self.backend.upsert_rel(RelData(
-                type=RelType.CHILD_OF,
-                from_id=file_id, from_type=NodeType.FILE,
-                to_id=dir_id,    to_type=NodeType.DIRECTORY,
-            ))
-
-        result["indexed"] = True
-
-        # ── LLM enrichment ─────────────────────────────────────────────────
-        if self.enrich_llm:
-            try:
-                llm_props, entity_data = self._llm_enrich(
-                    file_info.path, props
-                )
-                props.update(llm_props)
-                props["enrichment_status"] = "complete"
-                if not self.dry_run:
-                    self.backend.upsert_node(NodeData(
-                        type=NodeType.FILE, id=file_id, props=llm_props
-                    ))
-                    self._write_entities(file_id, entity_data)
-                result["enriched"] = True
-            except Exception:
-                pass
-
-        # ── Face enrichment ────────────────────────────────────────────────
-        if self.enrich_faces and props.get("file_category") in ("image", "video"):
-            try:
-                enricher = self._get_face_enricher()
-                if props["file_category"] == "image":
-                    enricher.process_image(file_info.path, file_id)
-                else:
-                    enricher.process_video(file_info.path, file_id)
-            except Exception:
-                pass
-
-        # ── API enrichment ─────────────────────────────────────────────────
-        if self.enrich_api:
-            try:
-                api_props = self._api_enrich(props)
-                if api_props and not self.dry_run:
-                    self.backend.upsert_node(NodeData(
-                        type=NodeType.FILE, id=file_id, props=api_props
-                    ))
-            except Exception:
-                pass
-
-        if self.on_progress:
-            self.on_progress(file_info.path, "indexed", props)
-
-        return result
-
-    # ── LLM enrichment ────────────────────────────────────────────────────────
+    # ── LLM enrichment (called by worker) ─────────────────────────────────────
 
     def _llm_enrich(self, path: str, props: dict) -> tuple[dict, dict]:
         from src.enrichers.llm_enricher import (
             enrich_document, enrich_image_vision, enrich_code, enrich_binary
         )
         category = props.get("file_category", "other")
-        llm_props = {}
+        llm_props: dict = {}
         entity_data: dict = {}
 
         if category == "document":
@@ -249,78 +330,65 @@ class ArchonIndexer:
 
         return llm_props, entity_data
 
-    # ── Entity graph writing ──────────────────────────────────────────────────
-
     def _write_entities(self, file_id: str, entity_data: dict) -> None:
         for topic in entity_data.get("topics", []):
-            if not topic:
-                continue
-            topic_id = f"topic_{hashlib.md5(topic.encode()).hexdigest()[:8]}"
+            if not topic: continue
+            tid = f"topic_{hashlib.sha256(topic.encode()).hexdigest()[:8]}"
             self.backend.upsert_node(NodeData(
-                type=NodeType.TOPIC, id=topic_id, props={"name": topic}
+                type=NodeType.TOPIC, id=tid, props={"name": topic}
             ))
             self.backend.upsert_rel(RelData(
                 type=RelType.MENTIONS,
                 from_id=file_id, from_type=NodeType.FILE,
-                to_id=topic_id,  to_type=NodeType.TOPIC,
+                to_id=tid, to_type=NodeType.TOPIC,
             ))
 
         for person in entity_data.get("people", []):
-            if not person:
-                continue
-            person_id = f"person_{hashlib.md5(person.encode()).hexdigest()[:8]}"
+            if not person: continue
+            pid = f"person_{hashlib.sha256(person.encode()).hexdigest()[:8]}"
             self.backend.upsert_node(NodeData(
-                type=NodeType.PERSON, id=person_id,
-                props={"name": person, "known": False}
-            ))
-            self.backend.upsert_rel(RelData(
-                type=RelType.MENTIONS,
-                from_id=file_id,  from_type=NodeType.FILE,
-                to_id=person_id,  to_type=NodeType.PERSON,
-            ))
-
-        for org in entity_data.get("organizations", []):
-            if not org:
-                continue
-            org_id = f"org_{hashlib.md5(org.encode()).hexdigest()[:8]}"
-            self.backend.upsert_node(NodeData(
-                type=NodeType.ORGANIZATION, id=org_id, props={"name": org}
+                type=NodeType.PERSON, id=pid, props={"name": person, "known": False}
             ))
             self.backend.upsert_rel(RelData(
                 type=RelType.MENTIONS,
                 from_id=file_id, from_type=NodeType.FILE,
-                to_id=org_id,    to_type=NodeType.ORGANIZATION,
+                to_id=pid, to_type=NodeType.PERSON,
+            ))
+
+        for org in entity_data.get("organizations", []):
+            if not org: continue
+            oid = f"org_{hashlib.sha256(org.encode()).hexdigest()[:8]}"
+            self.backend.upsert_node(NodeData(
+                type=NodeType.ORGANIZATION, id=oid, props={"name": org}
+            ))
+            self.backend.upsert_rel(RelData(
+                type=RelType.MENTIONS,
+                from_id=file_id, from_type=NodeType.FILE,
+                to_id=oid, to_type=NodeType.ORGANIZATION,
             ))
 
         for loc in entity_data.get("locations", []):
-            if not loc:
-                continue
-            loc_id = f"loc_{hashlib.md5(loc.encode()).hexdigest()[:8]}"
+            if not loc: continue
+            lid = f"loc_{hashlib.sha256(loc.encode()).hexdigest()[:8]}"
             self.backend.upsert_node(NodeData(
-                type=NodeType.LOCATION, id=loc_id, props={"name": loc}
+                type=NodeType.LOCATION, id=lid, props={"name": loc}
             ))
             self.backend.upsert_rel(RelData(
                 type=RelType.LOCATED_AT,
                 from_id=file_id, from_type=NodeType.FILE,
-                to_id=loc_id,    to_type=NodeType.LOCATION,
+                to_id=lid, to_type=NodeType.LOCATION,
             ))
 
-    # ── API enrichment ────────────────────────────────────────────────────────
-
     def _api_enrich(self, props: dict) -> dict[str, Any]:
-        """Enrich with free REST APIs based on file category."""
         result: dict[str, Any] = {}
         category = props.get("file_category")
-
         if category == "executable":
-            # EOL check via endoflife.date
             name = props.get("product_name", "").lower()
             if name:
                 try:
                     import httpx
                     r = httpx.get(
-                        f"https://endoflife.date/api/{name}.json",
-                        timeout=5
+                        f"https://endoflife.date/api/{name}.json", timeout=5
                     )
                     if r.status_code == 200:
                         cycles = r.json()
@@ -330,34 +398,8 @@ class ArchonIndexer:
                             eol = latest.get("eol")
                             result["eol_status"] = (
                                 "eol" if eol is True else
-                                "supported" if eol is False else
-                                "unknown"
+                                "supported" if eol is False else "unknown"
                             )
                 except Exception:
                     pass
-
         return result
-
-    # ── Helpers ───────────────────────────────────────────────────────────────
-
-    def _write_directory(self, dir_info: Any) -> None:
-        dir_id = self._dir_id(dir_info.path, dir_info.host, dir_info.share)
-        if not self.dry_run:
-            self.backend.upsert_node(NodeData(
-                type=NodeType.DIRECTORY, id=dir_id,
-                props={
-                    "path": dir_info.path,
-                    "name": dir_info.name,
-                    "host": dir_info.host,
-                    "share": dir_info.share,
-                }
-            ))
-
-    def _dir_id(self, path: str, host: str, share: str) -> str:
-        return hashlib.sha256(f"{host}:{share}:{path}".encode()).hexdigest()[:24]
-
-    def _get_face_enricher(self):
-        if self._face_enricher is None:
-            from src.enrichers.face import FaceEnricher
-            self._face_enricher = FaceEnricher(backend=self.backend)
-        return self._face_enricher
