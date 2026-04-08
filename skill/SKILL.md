@@ -1,5 +1,5 @@
 ---
-name: onyx-agent
+name: archon
 description: >
   Local AI agent platform for NAS file intelligence and torrent management.
   Use when asked to: catalogue, scan, analyse, organise, or deduplicate files
@@ -8,13 +8,13 @@ description: >
   Station. Triggers on: "scan my NAS", "find duplicates", "catalogue files",
   "organise my media", "download [show/movie]", "search iptorrents",
   "add to Download Station", "find torrent for", "clean up my file share".
-  Requires onyx-agent running locally (uv run python -m src.mcp_server).
+  Requires archon running locally (uv run python -m src.mcp_server).
 ---
 
-# onyx-agent Skill
+# archon Skill
 
 Local GPU-accelerated agents for NAS file intelligence and torrent hunting.
-Project root: `F:\projects\onyx-agent`
+Project root: `F:\projects\archon`
 
 ## Agents
 
@@ -53,7 +53,7 @@ Always confirm with the user before calling `torrent_add_download`.
 
 ```bash
 # Start MCP server (stdio — for Claude Desktop/Code)
-cd F:\projects\onyx-agent
+cd F:\projects\archon
 uv run python -m src.mcp_server
 
 # Start MCP server (HTTP — for web clients)

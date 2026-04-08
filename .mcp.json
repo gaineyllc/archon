@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "onyx-agent": {
+    "archon": {
       "command": "uv",
       "args": ["run", "python", "-m", "src.mcp_server"],
       "env": {

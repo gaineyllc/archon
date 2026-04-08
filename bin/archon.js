@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * onyx-agent MCP server launcher
+ * archon MCP server launcher
  *
  * Finds the Python interpreter in the uv venv and starts the MCP server
  * in stdio mode (default) or HTTP/SSE mode (--http flag).
  *
  * Usage:
- *   npx onyx-agent                 # stdio — use with Claude Desktop
- *   npx onyx-agent --http          # HTTP/SSE on port 8765
- *   npx onyx-agent --install       # run `uv sync` to set up Python deps
+ *   npx archon                 # stdio — use with Claude Desktop
+ *   npx archon --http          # HTTP/SSE on port 8765
+ *   npx archon --install       # run `uv sync` to set up Python deps
  */
 
 const { spawn } = require("child_process");
@@ -44,7 +44,7 @@ const args = process.argv.slice(2);
 // --install: run uv sync
 if (args.includes("--install")) {
   const uv = findUv();
-  console.error("[onyx-agent] Installing Python dependencies via uv sync...");
+  console.error("[archon] Installing Python dependencies via uv sync...");
   const proc = spawn(uv, ["sync"], { cwd: ROOT, stdio: "inherit" });
   proc.on("exit", (code) => process.exit(code ?? 0));
   return;
@@ -62,7 +62,7 @@ const proc = spawn(python, mcpArgs, {
 
 proc.on("exit", (code) => process.exit(code ?? 0));
 proc.on("error", (err) => {
-  console.error(`[onyx-agent] Failed to start MCP server: ${err.message}`);
-  console.error("Run: npx onyx-agent --install");
+  console.error(`[archon] Failed to start MCP server: ${err.message}`);
+  console.error("Run: npx archon --install");
   process.exit(1);
 });

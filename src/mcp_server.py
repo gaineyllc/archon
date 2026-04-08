@@ -1,5 +1,5 @@
 """
-onyx-agent MCP Server
+archon MCP Server
 ─────────────────────
 Exposes NAS Cataloguer + Torrent Hunter as MCP tools.
 Compatible with Claude Desktop, Claude Code, Cursor, Windsurf,
@@ -12,9 +12,9 @@ Run:
 Claude Desktop config (~/.claude/claude_desktop_config.json):
   {
     "mcpServers": {
-      "onyx-agent": {
+      "archon": {
         "command": "uv",
-        "args": ["--directory", "/path/to/onyx-agent", "run", "python", "-m", "src.mcp_server"],
+        "args": ["--directory", "/path/to/archon", "run", "python", "-m", "src.mcp_server"],
         "env": {
           "SMB_HOST": "192.168.1.x",
           "SMB_SHARE": "media",
@@ -37,7 +37,7 @@ from fastmcp import FastMCP
 load_dotenv()
 
 mcp = FastMCP(
-    name="onyx-agent",
+    name="archon",
     version="0.2.0",
     description=(
         "Local AI agents powered by Ollama on GPU. "

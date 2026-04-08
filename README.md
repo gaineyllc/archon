@@ -1,4 +1,4 @@
-# onyx-agent
+# archon
 
 Local AI agent platform powered by Ollama (GPU). Three agents, one MCP server.
 
@@ -29,8 +29,8 @@ Local AI agent platform powered by Ollama (GPU). Three agents, one MCP server.
 
 ```bash
 # 1. Clone
-git clone https://github.com/gaineyinc/onyx-agent
-cd onyx-agent
+git clone https://github.com/gaineyllc/archon
+cd archon
 
 # 2. Install Python deps
 uv sync
@@ -51,7 +51,7 @@ uv run python -m src.mcp_server
 uv run uvicorn src.api.main:app --reload
 
 # 5c. Run via npx (after npm install or publish)
-npx onyx-agent
+npx archon
 ```
 
 ## MCP Integration
@@ -61,9 +61,9 @@ Add to Claude Desktop (`~/.claude/claude_desktop_config.json`):
 ```json
 {
   "mcpServers": {
-    "onyx-agent": {
+    "archon": {
       "command": "npx",
-      "args": ["onyx-agent"],
+      "args": ["archon"],
       "env": {
         "SMB_HOST": "192.168.1.100",
         "SMB_SHARE": "media",
@@ -85,7 +85,7 @@ uv run python -m src.mcp_server
 ## Project Structure
 
 ```
-onyx-agent/
+archon/
 ├── src/
 │   ├── mcp_server.py              # FastMCP server — all tools exposed
 │   ├── api/main.py                # FastAPI REST endpoints
@@ -101,7 +101,7 @@ onyx-agent/
 ├── skill/                         # OpenClaw AgentSkill
 │   ├── SKILL.md
 │   └── references/
-├── bin/onyx-agent.js              # npm entrypoint
+├── bin/archon.js              # npm entrypoint
 ├── .mcp.json                      # MCP server config (auto-discovered)
 ├── package.json                   # npm package
 ├── pyproject.toml

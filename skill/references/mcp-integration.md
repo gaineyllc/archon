@@ -7,9 +7,9 @@ Add to `~/.claude/claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "onyx-agent": {
+    "archon": {
       "command": "npx",
-      "args": ["onyx-agent"],
+      "args": ["archon"],
       "env": {
         "SMB_HOST": "192.168.1.100",
         "SMB_SHARE": "media",
@@ -31,9 +31,9 @@ Or point directly at the local project:
 ```json
 {
   "mcpServers": {
-    "onyx-agent": {
+    "archon": {
       "command": "uv",
-      "args": ["--directory", "F:\\projects\\onyx-agent", "run", "python", "-m", "src.mcp_server"]
+      "args": ["--directory", "F:\\projects\\archon", "run", "python", "-m", "src.mcp_server"]
     }
   }
 }
@@ -46,9 +46,9 @@ Add `.mcp.json` to your project root:
 ```json
 {
   "mcpServers": {
-    "onyx-agent": {
+    "archon": {
       "command": "npx",
-      "args": ["onyx-agent"]
+      "args": ["archon"]
     }
   }
 }
@@ -66,7 +66,7 @@ Configure MCP client with:
 ```json
 {
   "mcpServers": {
-    "onyx-agent": {
+    "archon": {
       "url": "http://your-machine-ip:8765/sse"
     }
   }

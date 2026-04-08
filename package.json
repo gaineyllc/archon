@@ -1,5 +1,5 @@
 {
-  "name": "onyx-agent",
+  "name": "archon",
   "version": "0.2.0",
   "description": "Local AI agents for NAS file cataloguing, dedup/organisation (SMB/NFS), and torrent hunting via IPTorrents + Synology Download Station. Runs fully local on GPU via Ollama.",
   "keywords": [
@@ -15,15 +15,15 @@
     "file-organizer",
     "local-llm"
   ],
-  "homepage": "https://github.com/gaineyinc/onyx-agent",
+  "homepage": "https://github.com/gaineyllc/archon",
   "repository": {
     "type": "git",
-    "url": "https://github.com/gaineyinc/onyx-agent.git"
+    "url": "https://github.com/gaineyllc/archon.git"
   },
   "license": "MIT",
   "author": "Neil Gainey",
   "bin": {
-    "onyx-agent": "./bin/onyx-agent.js"
+    "archon": "./bin/archon.js"
   },
   "files": [
     "bin/",
@@ -37,7 +37,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "start": "node bin/onyx-agent.js",
+    "start": "node bin/archon.js",
     "install-python": "uv sync"
   }
 }
