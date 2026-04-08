@@ -205,6 +205,10 @@ def torrent_list_jobs() -> list[dict[str, Any]]:
     return _list_download_jobs.invoke({})
 
 
+# ── Graph knowledge base tools ────────────────────────────────────────────────
+from src.graph.mcp_tools import register_graph_tools
+register_graph_tools(mcp)
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
